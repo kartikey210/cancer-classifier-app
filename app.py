@@ -1,41 +1,23 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
 import pickle
-import os
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 import seaborn as sns
-
-# Optional UMAP
-try:
-    import importlib
-    if importlib.util.find_spec("umap") is not None:
-        umap = importlib.import_module("umap")
-        UMAP_AVAILABLE = True
-    else:
-        UMAP_AVAILABLE = False
-except:
-    UMAP_AVAILABLE = False
+from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
+from sklearn.decomposition import PCA
+import umap
 
 # -----------------------------
-# Load model
+# Load model safely
 # -----------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 try:
-    model = pickle.load(open(os.path.join(BASE_DIR, "model.pkl"), "rb"))
-    scaler = pickle.load(open(os.path.join(BASE_DIR, "scaler.pkl"), "rb"))
-    top_genes = pickle.load(open(os.path.join(BASE_DIR, "top_genes.pkl"), "rb"))
+    model = pickle.load(open("model.pkl", "rb"))
+    scaler = pickle.load(open("scaler.pkl", "rb"))
+    top_genes = pickle.load(open("top_genes.pkl", "rb"))
 except:
-    st.error("❌ Model files not found!")
+    st.error("❌ Model files not found! Make sure all .pkl files are uploaded.")
     st.stop()
-
-# -----------------------------
-# Page config
-# -----------------------------
-st.set_page_config(page_title="Cancer Classifier", layout="wide")
 
 # -----------------------------
 # Title
@@ -43,183 +25,137 @@ st.set_page_config(page_title="Cancer Classifier", layout="wide")
 st.title("🧬 Cancer Type Classification System")
 st.subheader("Breast Cancer (BRCA) vs Lung Cancer (LUAD)")
 
-st.markdown("""
-This system uses **Machine Learning on gene expression data**  
-to classify cancer types.
-""")
-
 # -----------------------------
 # Sidebar
 # -----------------------------
-st.sidebar.header("⚙️ Controls")
+st.sidebar.header("Controls")
+option = st.sidebar.selectbox("Choose Input Method", ["Sample Input", "Upload CSV"])
 
-option = st.sidebar.selectbox(
-    "Choose Input Method",
-    ["Sample Input", "Manual Input", "Upload CSV"]
-)
-
-# Model info
-st.sidebar.markdown("### 📊 Model Info")
-st.sidebar.write("Algorithm: Random Forest")
-st.sidebar.write("Features: Top Genes")
-st.sidebar.write("Type: Binary Classification")
+# -----------------------------
+# Function: Predict
+# -----------------------------
+def predict(data):
+    data_scaled = scaler.transform(data)
+    pred = model.predict(data_scaled)
+    prob = model.predict_proba(data_scaled)
+    return pred, prob
 
 # -----------------------------
 # SAMPLE INPUT
 # -----------------------------
 if option == "Sample Input":
-    st.header("🧪 Sample Prediction")
-
     if st.button("Run Sample Prediction"):
-        sample = np.random.rand(len(top_genes)).reshape(1, -1)
-        sample_scaled = scaler.transform(sample)
+        sample = np.random.rand(1, len(top_genes))
+        pred, prob = predict(sample)
 
-        pred = model.predict(sample_scaled)
-        proba = model.predict_proba(sample_scaled)
+        result = "BRCA (Breast Cancer)" if pred[0] == 0 else "LUAD (Lung Cancer)"
+        confidence = np.max(prob) * 100
 
-        st.subheader("Result")
-
-        if pred[0] == 0:
-            st.success("🟢 BRCA (Breast Cancer)")
-        else:
-            st.success("🔴 LUAD (Lung Cancer)")
-
-        st.info(f"Confidence: {np.max(proba)*100:.2f}%")
+        st.success(f"Prediction: {result}")
+        st.info(f"Confidence: {confidence:.2f}%")
 
 # -----------------------------
-# MANUAL INPUT
-# -----------------------------
-elif option == "Manual Input":
-    st.header("⌨️ Manual Input")
-
-    inputs = []
-    for i in range(min(10, len(top_genes))):
-        val = st.number_input(f"Gene {i+1}", value=0.0)
-        inputs.append(val)
-
-    if st.button("Predict"):
-        full = inputs + [0]*(len(top_genes)-len(inputs))
-        full = np.array(full).reshape(1, -1)
-
-        full_scaled = scaler.transform(full)
-        pred = model.predict(full_scaled)
-        proba = model.predict_proba(full_scaled)
-
-        if pred[0] == 0:
-            st.success("🟢 BRCA")
-        else:
-            st.success("🔴 LUAD")
-
-        st.info(f"Confidence: {np.max(proba)*100:.2f}%")
-
-# -----------------------------
-# CSV INPUT
+# CSV UPLOAD
 # -----------------------------
 elif option == "Upload CSV":
-    st.header("📂 Upload CSV")
+    file = st.file_uploader("Upload CSV file", type=["csv"])
 
-    file = st.file_uploader("Upload CSV", type=["csv"])
-
-    if file:
+    if file is not None:
         df = pd.read_csv(file)
+
+        st.write("Preview of Data:")
         st.dataframe(df.head())
 
+        try:
+            df = df[top_genes]  # match features
+        except:
+            st.error("❌ CSV must contain correct gene columns")
+            st.stop()
+
         if st.button("Predict CSV"):
-            try:
-                X = df.values[:, :len(top_genes)]
-                X_scaled = scaler.transform(X)
-                preds = model.predict(X_scaled)
+            pred, prob = predict(df)
 
-                df["Prediction"] = preds
-                df["Prediction"] = df["Prediction"].map({0: "BRCA", 1: "LUAD"})
+            df["Prediction"] = ["BRCA" if p == 0 else "LUAD" for p in pred]
+            df["Confidence"] = np.max(prob, axis=1)
 
-                st.success("Prediction Done")
-                st.dataframe(df)
-            except:
-                st.error("CSV format incorrect")
+            st.write("Results:")
+            st.dataframe(df)
 
 # -----------------------------
-# PCA VISUALIZATION
+# PCA
 # -----------------------------
-st.markdown("---")
-st.header("📉 PCA Visualization")
-
 if st.button("Show PCA"):
-    data = np.random.rand(100, len(top_genes))
-    data_scaled = scaler.transform(data)
+    sample = np.random.rand(100, len(top_genes))
+    sample_scaled = scaler.transform(sample)
 
     pca = PCA(n_components=2)
-    reduced = pca.fit_transform(data_scaled)
+    reduced = pca.fit_transform(sample_scaled)
 
     fig, ax = plt.subplots()
-    ax.scatter(reduced[:,0], reduced[:,1])
+    ax.scatter(reduced[:, 0], reduced[:, 1])
     ax.set_title("PCA Projection")
-
     st.pyplot(fig)
 
 # -----------------------------
-# UMAP VISUALIZATION
+# UMAP
 # -----------------------------
-st.header("📌 UMAP Visualization")
+if st.button("Show UMAP"):
+    sample = np.random.rand(100, len(top_genes))
+    sample_scaled = scaler.transform(sample)
 
-if UMAP_AVAILABLE:
-    if st.button("Show UMAP"):
-        reducer = umap.UMAP()
-        data = np.random.rand(100, len(top_genes))
-        data_scaled = scaler.transform(data)
+    reducer = umap.UMAP()
+    embedding = reducer.fit_transform(sample_scaled)
 
-        embedding = reducer.fit_transform(data_scaled)
-
-        fig, ax = plt.subplots()
-        ax.scatter(embedding[:,0], embedding[:,1])
-        ax.set_title("UMAP Projection")
-
-        st.pyplot(fig)
-else:
-    st.warning("Install UMAP: pip install umap-learn")
+    fig, ax = plt.subplots()
+    ax.scatter(embedding[:, 0], embedding[:, 1])
+    ax.set_title("UMAP Projection")
+    st.pyplot(fig)
 
 # -----------------------------
-# CONFUSION MATRIX (Demo)
+# CONFUSION MATRIX
 # -----------------------------
-st.markdown("---")
-st.header("📊 Model Evaluation")
-
 if st.button("Show Confusion Matrix"):
-    y_true = np.random.randint(0,2,100)
-    y_pred = np.random.randint(0,2,100)
+    sample = np.random.rand(100, len(top_genes))
+    y_true = np.random.randint(0, 2, 100)
+
+    sample_scaled = scaler.transform(sample)
+    y_pred = model.predict(sample_scaled)
 
     cm = confusion_matrix(y_true, y_pred)
 
     fig, ax = plt.subplots()
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    ax.set_title("Confusion Matrix")
-
     st.pyplot(fig)
 
-    accuracy = np.mean(y_true == y_pred)
-    st.info(f"Accuracy (demo): {accuracy*100:.2f}%")
-
 # -----------------------------
-# FEATURE IMPORTANCE
+# ROC CURVE (NEW 🔥)
 # -----------------------------
-st.markdown("---")
-st.header("🧬 Top Important Genes")
+if st.button("Show ROC Curve"):
+    sample = np.random.rand(100, len(top_genes))
+    y_true = np.random.randint(0, 2, 100)
 
-if hasattr(model, "feature_importances_"):
-    importances = model.feature_importances_
+    sample_scaled = scaler.transform(sample)
+    prob = model.predict_proba(sample_scaled)[:, 1]
 
-    top_idx = np.argsort(importances)[-10:]
+    fpr, tpr, _ = roc_curve(y_true, prob)
+    roc_auc = auc(fpr, tpr)
 
     fig, ax = plt.subplots()
-    ax.barh(range(len(top_idx)), importances[top_idx])
-    ax.set_yticks(range(len(top_idx)))
-    ax.set_yticklabels(top_idx)
-    ax.set_title("Top Gene Importance")
-
+    ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+    ax.plot([0, 1], [0, 1], linestyle="--")
+    ax.set_title("ROC Curve")
+    ax.legend()
     st.pyplot(fig)
 
 # -----------------------------
-# Footer
+# CLASSIFICATION REPORT
 # -----------------------------
-st.markdown("---")
-st.markdown("🎓 Final Year B.Tech Bioinformatics Project")
+if st.button("Show Classification Report"):
+    sample = np.random.rand(100, len(top_genes))
+    y_true = np.random.randint(0, 2, 100)
+
+    sample_scaled = scaler.transform(sample)
+    y_pred = model.predict(sample_scaled)
+
+    report = classification_report(y_true, y_pred)
+    st.text(report)
