@@ -58,29 +58,162 @@ if option == "Sample Input":
 # CSV UPLOAD
 # -----------------------------
 elif option == "Upload CSV":
-    file = st.file_uploader("Upload CSV file", type=["csv"])
+
+    file = st.file_uploader(
+        "Upload CSV/TXT File",
+        type=["csv", "txt", "tsv"]
+    )
 
     if file is not None:
-        df = pd.read_csv(file)
-
-        st.write("Preview of Data:")
-        st.dataframe(df.head())
 
         try:
-            df = df[top_genes]  # match features
-        except:
-            st.error("❌ CSV must contain correct gene columns")
-            st.stop()
+            # =========================
+            # READ FILE FLEXIBLY
+            # =========================
+            df = pd.read_csv(
+                file,
+                sep=None,
+                engine="python"
+            )
 
-        if st.button("Predict CSV"):
-            pred, prob = predict(df)
+            st.write("Preview of Uploaded Data:")
+            st.dataframe(df.head())
 
-            df["Prediction"] = ["BRCA" if p == 0 else "LUAD" for p in pred]
-            df["Confidence"] = np.max(prob, axis=1)
+            # =========================
+            # AUTO DETECT GENE COLUMN
+            # =========================
+            possible_gene_cols = [
+                "gene",
+                "Gene",
+                "GENE",
+                "symbol",
+                "Symbol",
+                "IDX",
+                "id"
+            ]
 
-            st.write("Results:")
-            st.dataframe(df)
+            gene_col = None
 
+            for col in possible_gene_cols:
+                if col in df.columns:
+                    gene_col = col
+                    break
+
+            # =========================
+            # TRANSPOSE IF GENES IN ROWS
+            # =========================
+            if gene_col is not None:
+
+                df = df.set_index(gene_col)
+
+                df = df.transpose()
+
+                df.reset_index(drop=True, inplace=True)
+
+            # =========================
+            # CLEAN COLUMN NAMES
+            # =========================
+            df.columns = df.columns.astype(str)
+
+            # =========================
+            # CONVERT VALUES TO NUMERIC
+            # =========================
+            df = df.apply(pd.to_numeric, errors="coerce")
+
+            # =========================
+            # FILL NaN VALUES
+            # =========================
+            df = df.fillna(0)
+
+            # =========================
+            # MATCH AVAILABLE GENES
+            # =========================
+            available_genes = [
+                gene for gene in top_genes
+                if gene in df.columns
+            ]
+
+            missing_genes = [
+                gene for gene in top_genes
+                if gene not in df.columns
+            ]
+
+            st.success(f"Matched genes: {len(available_genes)}")
+            st.warning(f"Missing genes filled with 0: {len(missing_genes)}")
+
+            # =========================
+            # FILL MISSING GENES
+            # =========================
+            for gene in missing_genes:
+                df[gene] = 0
+
+            # =========================
+            # REORDER FEATURES
+            # =========================
+            df_model = df[top_genes]
+
+            # =========================
+            # PREDICT BUTTON
+            # =========================
+            if st.button("Predict CSV"):
+
+                pred, prob = predict(df_model)
+
+                results_df = pd.DataFrame({
+                    "Prediction": [
+                        "BRCA" if p == 0 else "LUAD"
+                        for p in pred
+                    ],
+                    "Confidence": np.max(prob, axis=1)
+                })
+
+                st.subheader("Prediction Results")
+                st.dataframe(results_df)
+
+                # =========================
+                # SUMMARY METRICS
+                # =========================
+                brca_count = (
+                    results_df["Prediction"] == "BRCA"
+                ).sum()
+
+                luad_count = (
+                    results_df["Prediction"] == "LUAD"
+                ).sum()
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.metric(
+                        "BRCA Samples",
+                        brca_count
+                    )
+
+                with col2:
+                    st.metric(
+                        "LUAD Samples",
+                        luad_count
+                    )
+
+                # =========================
+                # DISTRIBUTION PLOT
+                # =========================
+                st.subheader("Prediction Distribution")
+
+                fig, ax = plt.subplots()
+
+                results_df["Prediction"].value_counts().plot(
+                    kind="bar",
+                    ax=ax
+                )
+
+                ax.set_xlabel("Cancer Type")
+                ax.set_ylabel("Count")
+
+                st.pyplot(fig)
+
+        except Exception as e:
+            st.error(f"❌ Error processing file: {e}")
 # -----------------------------
 # PCA
 # -----------------------------
