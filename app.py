@@ -15,6 +15,10 @@ try:
     model = pickle.load(open("model.pkl", "rb"))
     scaler = pickle.load(open("scaler.pkl", "rb"))
     top_genes = pickle.load(open("top_genes.pkl", "rb"))
+
+    # SHOW MODEL CLASSES
+    st.write("Model Classes:", model.classes_)
+
 except:
     st.error("❌ Model files not found! Make sure all .pkl files are uploaded.")
     st.stop()
