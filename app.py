@@ -1,41 +1,48 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pickle
+import joblib
 import matplotlib.pyplot as plt
 import seaborn as sns
+
 from sklearn.metrics import (
     confusion_matrix,
     classification_report,
     roc_curve,
     auc
 )
+
 from sklearn.decomposition import PCA
 import umap
 
 # =========================================================
-# LOAD MODEL FILES
-# =========================================================
-try:
-    model = pickle.load(open("model.pkl", "rb"))
-    scaler = pickle.load(open("scaler.pkl", "rb"))
-    top_genes = pickle.load(open("top_genes.pkl", "rb"))
-
-    # SHOW MODEL CLASSES
-    st.write("Model Classes:", model.classes_)
-
-except Exception as e:
-    st.error(f"❌ Error loading model files: {e}")
-    st.stop()
-
-# =========================================================
-# PAGE TITLE
+# PAGE CONFIG
 # =========================================================
 st.set_page_config(
     page_title="Cancer Type Classification",
     layout="wide"
 )
 
+# =========================================================
+# LOAD MODEL FILES
+# =========================================================
+try:
+    model = joblib.load("model.pkl")
+    scaler = joblib.load("scaler.pkl")
+    top_genes = joblib.load("top_genes.pkl")
+
+    st.success("✅ Model files loaded successfully")
+
+    if hasattr(model, "classes_"):
+        st.write("Model Classes:", model.classes_)
+
+except Exception as e:
+    st.error(f"❌ Error loading model files: {e}")
+    st.stop()
+
+# =========================================================
+# TITLE
+# =========================================================
 st.title("🧬 Cancer Type Classification System")
 st.subheader("Breast Cancer (BRCA) vs Lung Cancer (LUAD)")
 
@@ -53,6 +60,7 @@ option = st.sidebar.selectbox(
 # PREDICTION FUNCTION
 # =========================================================
 def predict(data):
+
     data_scaled = scaler.transform(data)
 
     pred = model.predict(data_scaled)
@@ -66,7 +74,7 @@ def predict(data):
 # =========================================================
 if option == "Sample Input":
 
-    st.write("### Run Random Sample Prediction")
+    st.write("## Random Sample Prediction")
 
     if st.button("Run Sample Prediction"):
 
@@ -74,7 +82,6 @@ if option == "Sample Input":
 
         pred, prob = predict(sample)
 
-        # FIXED CLASS MAPPING
         result = "LUAD (Lung Cancer)" if pred[0] == 0 else "BRCA (Breast Cancer)"
 
         confidence = np.max(prob) * 100
@@ -90,63 +97,129 @@ elif option == "Upload CSV":
 
     file = st.file_uploader(
         "Upload CSV File",
-        type=["csv"]
+        type=["csv", "tsv", "txt"]
     )
 
     if file is not None:
 
-        # READ CSV
-        df = pd.read_csv(file)
+        # =================================================
+        # READ FILE
+        # =================================================
+        try:
+
+            if file.name.endswith(".tsv") or file.name.endswith(".txt"):
+                df = pd.read_csv(file, sep="\t")
+
+            else:
+                df = pd.read_csv(file)
+
+        except Exception as e:
+            st.error(f"❌ Error reading file: {e}")
+            st.stop()
 
         st.write("## Preview of Uploaded Data")
 
         st.dataframe(df.head())
 
         # =================================================
-        # FLEXIBLE DATA HANDLING
+        # HANDLE TCGA RNASEQ FORMAT
         # =================================================
+        if "gene_name" in df.columns:
 
-        # CASE 1: Genes are row names
-        if "IDX" in df.columns:
+            st.info("Detected TCGA RNA-seq format")
 
-            df = df.set_index("IDX")
+            # expression column detection
+            expression_col = None
 
-            df = df.transpose()
+            possible_cols = [
+                "unstranded",
+                "tpm_unstranded",
+                "fpkm_unstranded",
+                "fpkm_uq_unstranded"
+            ]
 
-        # CASE 2: First column is gene names
-        elif df.columns[0] not in top_genes:
+            for col in possible_cols:
+                if col in df.columns:
+                    expression_col = col
+                    break
 
-            df = df.set_index(df.columns[0])
+            if expression_col is None:
+                st.error("❌ No expression column found")
+                st.stop()
 
-            df = df.transpose()
+            # build gene expression vector
+            expression_data = df[["gene_name", expression_col]]
+
+            expression_data = expression_data.dropna()
+
+            expression_data.columns = ["gene", "expression"]
+
+            expression_data = expression_data.groupby("gene").mean()
+
+            expression_data = expression_data.transpose()
+
+            df = expression_data
+
+        else:
+
+            # =================================================
+            # NORMAL GENE MATRIX FORMAT
+            # =================================================
+
+            # CASE 1
+            if "IDX" in df.columns:
+
+                df = df.set_index("IDX")
+
+                df = df.transpose()
+
+            # CASE 2
+            elif df.columns[0] not in top_genes:
+
+                df = df.set_index(df.columns[0])
+
+                df = df.transpose()
 
         # =================================================
-        # KEEP ONLY REQUIRED GENES
+        # MATCH GENES
         # =================================================
         common_genes = [g for g in top_genes if g in df.columns]
 
-        st.write(f"Matched Genes: {len(common_genes)} / {len(top_genes)}")
+        st.write(f"### Matched Genes: {len(common_genes)} / {len(top_genes)}")
 
         if len(common_genes) < 10:
-            st.error("❌ Not enough matching genes found.")
+
+            st.error("❌ Not enough matching genes found")
+
             st.stop()
 
-        # CREATE INPUT DATAFRAME
+        # =================================================
+        # CREATE INPUT DATA
+        # =================================================
         input_df = pd.DataFrame(columns=top_genes)
 
         for gene in top_genes:
 
             if gene in df.columns:
+
                 input_df[gene] = pd.to_numeric(
                     df[gene],
                     errors="coerce"
                 )
 
             else:
+
                 input_df[gene] = 0
 
-        # HANDLE MISSING VALUES
+        # =================================================
+        # CLEAN DATA
+        # =================================================
         input_df = input_df.fillna(0)
+
+        input_df = input_df.replace(
+            [np.inf, -np.inf],
+            0
+        )
 
         st.success("✅ Data formatted successfully")
 
@@ -159,7 +232,6 @@ elif option == "Upload CSV":
 
             results_df = pd.DataFrame()
 
-            # FIXED CLASS MAPPING
             results_df["Prediction"] = [
                 "LUAD" if p == 0 else "BRCA"
                 for p in pred
@@ -175,11 +247,15 @@ elif option == "Upload CSV":
             st.dataframe(results_df)
 
             # =================================================
-            # COUNTS
+            # METRICS
             # =================================================
-            brca_count = (results_df["Prediction"] == "BRCA").sum()
+            brca_count = (
+                results_df["Prediction"] == "BRCA"
+            ).sum()
 
-            luad_count = (results_df["Prediction"] == "LUAD").sum()
+            luad_count = (
+                results_df["Prediction"] == "LUAD"
+            ).sum()
 
             col1, col2 = st.columns(2)
 
@@ -216,7 +292,10 @@ elif option == "Upload CSV":
 
             fig2, ax2 = plt.subplots(figsize=(8, 5))
 
-            ax2.hist(results_df["Confidence"], bins=20)
+            ax2.hist(
+                results_df["Confidence"],
+                bins=20
+            )
 
             ax2.set_title("Prediction Confidence")
 
@@ -227,7 +306,7 @@ elif option == "Upload CSV":
             st.pyplot(fig2)
 
             # =================================================
-            # PCA VISUALIZATION
+            # PCA
             # =================================================
             st.write("## PCA Visualization")
 
@@ -239,7 +318,7 @@ elif option == "Upload CSV":
 
             fig3, ax3 = plt.subplots(figsize=(8, 6))
 
-            scatter = ax3.scatter(
+            ax3.scatter(
                 reduced[:, 0],
                 reduced[:, 1]
             )
@@ -249,7 +328,7 @@ elif option == "Upload CSV":
             st.pyplot(fig3)
 
             # =================================================
-            # UMAP VISUALIZATION
+            # UMAP
             # =================================================
             st.write("## UMAP Visualization")
 
@@ -269,12 +348,15 @@ elif option == "Upload CSV":
             st.pyplot(fig4)
 
 # =========================================================
-# DEMO CONFUSION MATRIX
+# DEMO SECTION
 # =========================================================
 st.write("---")
 
-st.write("## Model Evaluation Demonstration")
+st.write("# Model Evaluation Demonstration")
 
+# =========================================================
+# CONFUSION MATRIX
+# =========================================================
 if st.button("Show Confusion Matrix"):
 
     sample = np.random.rand(100, len(top_genes))
@@ -326,7 +408,11 @@ if st.button("Show ROC Curve"):
         label=f"AUC = {roc_auc:.2f}"
     )
 
-    ax6.plot([0, 1], [0, 1], linestyle="--")
+    ax6.plot(
+        [0, 1],
+        [0, 1],
+        linestyle="--"
+    )
 
     ax6.set_title("ROC Curve")
 
